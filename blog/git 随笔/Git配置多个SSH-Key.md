@@ -47,6 +47,30 @@ chown $USER ~/.ssh/config
 chmod 644 ~/.ssh/config
 ```
 
+## 注意
+
+ git 的配置分为三级别, System —> Global —> Local. System 即系统级别, Global 为配置的全局, Local 为仓库级别, 优先级是 Local > Global > System.
+ 
+ 既然已经配置多帐号了, 所以建议清除全局配置.
+ 
+ ```
+git config --global --unset user.name
+git config --global --unset user.email
+ ```
+ 
+而是对仓库进行单独配置.
+
+```
+git config --local user.name "xxxxx"
+git config --local user.email "xxxxx@xxxxx.xxxxx"
+```
+
+执行完毕后, 通过以下命令查看本仓库的所有配置信息.
+
+```
+git config --local --list
+```
+
 ## 参考资料
 
 [Git配置多个SSH-Key](https://gitee.com/help/articles/4229#article-header0)
