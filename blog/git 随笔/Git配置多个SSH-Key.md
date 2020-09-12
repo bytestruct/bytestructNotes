@@ -20,7 +20,7 @@ $ ssh-keygen -t rsa -C 'xxxxx@company.com' -f ~/.ssh/gitee_id_rsa
 $ ssh-keygen -t rsa -C 'xxxxx@qq.com' -f ~/.ssh/github_id_rsa
 ```
 
-在 `~/.ssh` 目录下新建一个 `config` 文件, 添加如下内容(其中 Host 和 HostName 填写 git 服务器的域名, IdentityFile 指定私钥的路径)
+在 `~/.ssh` 目录下新建一个 `config` 文件, 添加如下内容.
 
 ```
 # gitee
