@@ -36,7 +36,7 @@ PreferredAuthentications publickey
 IdentityFile ~/.ssh/github_id_rsa
 ```
 
-如果通过网站有多个用户, 会通过别名确定key.
+如果相同网站有多个用户, 会通过别名确定key.
 
 ## Bad owner or permissions on ~/.ssh/config
 
