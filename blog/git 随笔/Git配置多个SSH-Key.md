@@ -24,10 +24,10 @@ $ ssh-keygen -t rsa -C 'xxxxx@qq.com' -f ~/.ssh/github_id_rsa
 
 ```
 # gitee
-Host gitee.com
-HostName gitee.com
-PreferredAuthentications publickey
-IdentityFile ~/.ssh/gitee_id_rsa
+Host gitee.com #别名, 随便定
+HostName gitee.com # 网站的域名或 IP
+PreferredAuthentications publickey # 配置登录时用什么权限认证--可设为publickey,password publickey,keyboard-interactive等
+IdentityFile ~/.ssh/gitee_id_rsa #密钥文件的地址, 注意是私钥
 
 # github
 Host github.com
@@ -35,6 +35,8 @@ HostName github.com
 PreferredAuthentications publickey
 IdentityFile ~/.ssh/github_id_rsa
 ```
+
+如果通过网站有多个用户, 会通过别名确定key.
 
 ## Bad owner or permissions on ~/.ssh/config
 
