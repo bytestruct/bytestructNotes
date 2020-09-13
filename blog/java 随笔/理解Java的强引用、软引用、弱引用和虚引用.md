@@ -92,13 +92,216 @@ private T referent;         /* Treated specially by GC */
     volatile ReferenceQueue<? super T> queue;
 ```
 
+- next：下一个`Reference`实例的引用, `Reference`实例通过此构造单向的链表.
 
+```java
+    /* The link in a ReferenceQueue's list of Reference objects.
+     *
+     * When registered: null
+     *        enqueued: next element in queue (or this if last)
+     *        dequeued: this (marking FinalReferences as inactive)
+     *    unregistered: null
+     */
+    @SuppressWarnings("rawtypes")
+    volatile Reference next;
+```
 
-`Reference` 对象关联的引用队列, 对象如果即将被垃圾收集器回收, 此队列作为通知的回调队列, 也就是
+- discovered：注意这个属性由 transient 修饰, 基于状态表示不同链表中的下一个待处理的对象, 主要是pending-reference 列表的下一个元素, 通过 JVM 直接调用赋值.
 
+```java
+/* When active:  next element in a discovered reference list maintained by GC (or this if last)
+*     pending:   next element in the pending list (or null if last)
+*     otherwise:   NULL
+*/
+transient private Reference<T> discovered;  /* used by VM */
+```
 
+**实例方法(和ReferenceHandler线程不相关的方法)**:
 
+```java
+// 获取持有的referent实例
+@HotSpotIntrinsicCandidate
+public T get() {
+     return this.referent;
+}
 
+// 把持有的referent实例置为null
+public void clear() {
+     this.referent = null;
+}
+
+// 判断是否处于enqeued状态
+public boolean isEnqueued() {
+     return (this.queue == ReferenceQueue.ENQUEUED);
+}
+
+// 入队参数，同时会把referent置为null
+public boolean enqueue() {
+     this.referent = null;
+     return this.queue.enqueue(this);
+}
+
+// 覆盖clone方法并且抛出异常，也就是禁止clone
+@Override
+protected Object clone() throws CloneNotSupportedException {
+     throw new CloneNotSupportedException();
+}
+
+// 确保给定的引用实例是强可达的
+@ForceInline
+public static void reachabilityFence(Object ref) {
+}
+```
+
+### 1.3. ReferenceHandler线程
+
+ReferenceHandler 线程是由 `Reference` 静态代码块中建立并且运行的线程, 它的运行方法中依赖了比较多的本地(native) 方法, ReferenceHandler 线程的主要功能是处理 pending 链表中的引用对象:
+
+```java
+    // ReferenceHandler直接继承于Thread覆盖了run方法
+    private static class ReferenceHandler extends Thread {
+        
+        // 静态工具方法用于确保对应的类型已经初始化
+        private static void ensureClassInitialized(Class<?> clazz) {
+            try {
+                Class.forName(clazz.getName(), true, clazz.getClassLoader());
+            } catch (ClassNotFoundException e) {
+                throw (Error) new NoClassDefFoundError(e.getMessage()).initCause(e);
+            }
+        }
+
+        static {
+            // 确保Cleaner这个类已经初始化
+            // pre-load and initialize Cleaner class so that we don't
+            // get into trouble later in the run loop if there's
+            // memory shortage while loading/initializing it lazily.
+            ensureClassInitialized(Cleaner.class);
+        }
+
+        ReferenceHandler(ThreadGroup g, String name) {
+            super(g, null, name, 0, false);
+        }
+        
+        // 注意run方法是一个死循环执行processPendingReferences
+        public void run() {
+            while (true) {
+                processPendingReferences();
+            }
+        }
+    }
+
+    /* 原子获取(后)并且清理VM中的pending引用链表
+     * Atomically get and clear (set to null) the VM's pending-Reference list.
+     */
+    private static native Reference<Object> getAndClearReferencePendingList();
+
+    /* 检验VM中的pending引用对象链表是否有剩余元素
+     * Test whether the VM's pending-Reference list contains any entries.
+     */
+    private static native boolean hasReferencePendingList();
+
+    /* 等待直到pending引用对象链表不为null，此方法阻塞的具体实现又VM实现
+     * Wait until the VM's pending-Reference list may be non-null.
+     */
+    private static native void waitForReferencePendingList();
+
+    // 锁对象，用于控制等待pending对象时候的加锁和开始处理这些对象时候的解锁
+    private static final Object processPendingLock = new Object();
+    // 正在处理pending对象的时候，这个变量会更新为true，处理完毕或者初始化状态为false，用于避免重复处理或者重复等待
+    private static boolean processPendingActive = false;
+
+    // 这个是死循环中的核心方法，功能是处理pending链表中的引用元素
+    private static void processPendingReferences() {
+        // Only the singleton reference processing thread calls
+        // waitForReferencePendingList() and getAndClearReferencePendingList().
+        // These are separate operations to avoid a race with other threads
+        // that are calling waitForReferenceProcessing().
+        // （1）等待
+        waitForReferencePendingList();
+        Reference<Object> pendingList;
+        synchronized (processPendingLock) {
+            // （2）获取并清理，标记处理中状态
+            pendingList = getAndClearReferencePendingList();
+            processPendingActive = true;
+        }
+        // （3）通过discovered(下一个元素)遍历pending链表进行处理
+        while (pendingList != null) {
+            Reference<Object> ref = pendingList;
+            pendingList = ref.discovered;
+            ref.discovered = null;
+            // 如果是Cleaner类型执行执行clean方法并且对锁对象processPendingLock进行唤醒所有阻塞的线程
+            if (ref instanceof Cleaner) {
+                ((Cleaner)ref).clean();
+                // Notify any waiters that progress has been made.
+                // This improves latency for nio.Bits waiters, which
+                // are the only important ones.
+                synchronized (processPendingLock) {
+                    processPendingLock.notifyAll();
+                }
+            } else {
+                // 非Cleaner类型并且引用队列不为ReferenceQueue.NULL则进行入队操作
+                ReferenceQueue<? super Object> q = ref.queue;
+                if (q != ReferenceQueue.NULL) q.enqueue(ref);
+            }
+        }
+        // （4）当次循环结束之前再次唤醒锁对象processPendingLock上阻塞的所有线程
+        // Notify any waiters of completion of current round.
+        synchronized (processPendingLock) {
+            processPendingActive = false;
+            processPendingLock.notifyAll();
+        }
+    }
+```
+
+ReferenceHandler 线程启动的静态代码块如下:
+
+```java
+    static {
+        // ThreadGroup继承当前执行线程(一般是主线程)的线程组
+        ThreadGroup tg = Thread.currentThread().getThreadGroup();
+        for (ThreadGroup tgn = tg;
+             tgn != null;
+             tg = tgn, tgn = tg.getParent());
+        // 创建线程实例，命名为Reference Handler，配置最高优先级和后台运行(守护线程)，然后启动
+        Thread handler = new ReferenceHandler(tg, "Reference Handler");
+        /* If there were a special system-only priority greater than
+         * MAX_PRIORITY, it would be used here
+         */
+        handler.setPriority(Thread.MAX_PRIORITY);
+        handler.setDaemon(true);
+        handler.start();
+        // 注意这里覆盖了全局的jdk.internal.misc.JavaLangRefAccess实现
+        // provide access in SharedSecrets
+        SharedSecrets.setJavaLangRefAccess(new JavaLangRefAccess() {
+            @Override
+            public boolean waitForReferenceProcessing()
+                throws InterruptedException{
+                return Reference.waitForReferenceProcessing();
+            }
+
+            @Override
+            public void runFinalization() {
+                Finalizer.runFinalization();
+            }
+        });
+    }
+
+    // 如果正在处理pending链表中的引用对象或者监测到VM中的pending链表中还有剩余元素则基于锁对象processPendingLock进行等待
+    private static boolean waitForReferenceProcessing()
+        throws InterruptedException{
+        synchronized (processPendingLock) {
+            if (processPendingActive || hasReferencePendingList()) {
+                // Wait for progress, not necessarily completion.
+                processPendingLock.wait();
+                return true;
+            } else {
+                return false;
+            }
+        }
+    }
+```
+
+由于 ReferenceHandler 线程是 `Reference` 的静态代码创建的, 所以只要 `Reference` 这个父类被初始化, 该线程就会创建和运行, 由于它是守护线程, 除非 JVM 进程终结, 否则它会一直在后台运行(注意它的 `run()` 方法里面使用了死循环).
 
 
 
